@@ -1,0 +1,50 @@
+{
+  "contact": {
+    "name": "Candidate Name",
+    "email": "candidate@example.com",
+    "phone": "+1 555 555 5555",
+    "location": "City, ST",
+    "links": [
+      "https://www.linkedin.com/in/example",
+      "https://github.com/example"
+    ],
+    "title": "Target Role"
+  },
+  "summary": "Experienced technology operator with a track record across IT operations, business systems, infrastructure modernization, automation, stakeholder management, and cross-functional delivery. Replace this with your factual baseline summary before using the sweep.",
+  "skills": [
+    {
+      "category": "Core Strengths",
+      "items": [
+        "IT Operations",
+        "Business Systems",
+        "Infrastructure",
+        "Automation",
+        "Vendor Management",
+        "Executive Communication"
+      ]
+    }
+  ],
+  "experience": [
+    {
+      "company": "Example Company",
+      "title": "Technology Operations Lead",
+      "dates": "2020 - Present",
+      "location": "Remote",
+      "bullets": [
+        "Led cross-functional technology operations initiatives across infrastructure, endpoint, SaaS, and support workflows.",
+        "Built automations and process improvements that reduced manual work and improved delivery reliability.",
+        "Partnered with stakeholders across business, finance, security, and operations to ship practical systems improvements."
+      ]
+    }
+  ],
+  "education": [
+    {
+      "school": "Example University",
+      "degree": "Degree or Certification",
+      "dates": "Year"
+    }
+  ],
+  "meta": {
+    "accent_color": "#0acf83"
+  }
+}

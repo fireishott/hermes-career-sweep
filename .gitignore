@@ -1,0 +1,19 @@
+# Runtime / generated data
+node_modules/
+.env
+portals.yml
+output/
+reports/
+data/*.tsv
+data/*.md
+*.pdf
+*.html
+
+# Python
+__pycache__/
+*.pyc
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
