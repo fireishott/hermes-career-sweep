@@ -6,7 +6,8 @@ This repo is a practical layer on top of the excellent MIT-licensed [`career-ops
 
 ## What this adds
 
-- ATS/API-first scanning via `scan.mjs`.
+- **Hybrid scan**: ATS/API-first via `scan.mjs` (Greenhouse, Ashby, Lever) + websearch fallback for companies without scannable ATS boards.
+- Title, location, and salary filtering in `portals.yml` to surface only relevant matches.
 - Playwright liveness checks so dead listings do not clog the pipeline.
 - Tailored resume rendering to PDF.
 - Company + role names in generated resume filenames.
@@ -37,11 +38,22 @@ Run a dry test with a sample job:
 python3 scripts/run-sweep.py --dry-run --send-email --sample-job-json examples/sample-job.json --max-resumes 1
 ```
 
-Run a real scan:
+## Running the scanner
 
+The scanner supports two modes:
+
+**ATS mode** (automatic): Companies with Greenhouse, Ashby, or Lever boards are scanned via API with zero LLM cost. `scan.mjs` auto-detects the provider and pulls all live listings.
+
+**Websearch mode**: Companies without scannable ATS boards (custom career sites, Workday, Oracle HCM) use a `scan_query` field in `portals.yml`. Your agent runs web searches for these companies during the cron run and filters results against your title/location criteria.
+
+Run a dry scan to see what would be found:
 ```bash
-node validate-portals.mjs portals.yml
-python3 scripts/run-sweep.py --send-email --max-resumes 3
+node scan.mjs --dry-run
+```
+
+Run a real scan (writes to `data/pipeline.md`):
+```bash
+node scan.mjs
 ```
 
 ## Email setup
@@ -69,20 +81,27 @@ python3 scripts/send-resume-email.py \
 Use this as the prompt for a scheduled Hermes job:
 
 ```text
-Run the job sweep from this repository.
+Run the job sweep pipeline from this repository.
 
-Rules:
+TARGET ROLES: Define your target titles, keywords, and salary range here.
+
+STEP 1: ATS SCAN
+Run `node scan.mjs` (NOT --dry-run). This scans all ATS-connected companies and writes new offers to data/pipeline.md.
+
+STEP 2: WEBSEARCH THE REMAINING
+The scan output lists companies it couldn't scan via API — marked "websearch". For EACH of those, run web_search using the scan_query from your portals.yml. Filter results against your title, location, and salary criteria.
+
+STEP 3: REPORT
+Compile ALL matches (ATS + websearch) into a single report. Group by company. Include: role title, location, URL, and level (Director/Manager/IC).
+
+RULES:
 - Do not invent jobs, URLs, salaries, or send status.
 - Do not submit applications.
-- Generate at most 3 resumes per run unless I ask otherwise.
+- Generate at most 3 resumes per run unless configured otherwise.
 - Resume PDF filenames must include company and role.
 - Email body must include role list, apply links, PDF filenames, and host folders.
 - If no matches survive verification, do not generate filler resumes.
-
-Steps:
-1. Run node validate-portals.mjs portals.yml.
-2. Run python3 scripts/run-sweep.py --send-email --max-resumes 3.
-3. Final response: roles found, apply links, PDFs generated, exact host folder(s), email result, blockers.
+- Maximum 3 web_search calls per websearch company.
 ```
 
 ## Notes
