@@ -1,0 +1,102 @@
+"""Email formatting and delivery."""
+
+import smtplib
+import ssl
+from datetime import datetime
+from email.message import EmailMessage
+from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO
+
+
+def format_report(jobs, errors=None, ats_count=0, total_scanned=0, source_counts=None):
+    """Format a clean email report from scored jobs."""
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%I:%M %p PT")
+    is_morning = now.hour < 12
+    period = "Morning" if is_morning else "Afternoon"
+
+    high = [j for j in jobs if j["label"] == "HIGH"]
+    medium = [j for j in jobs if j["label"] == "MEDIUM"]
+    low = [j for j in jobs if j["label"] == "LOW"]
+    vegas = [j for j in jobs if j["location_type"] == "vegas"]
+    remote = [j for j in jobs if j["location_type"] == "remote_us"]
+
+    # Source breakdown
+    sc = source_counts or {}
+    source_line = " | ".join(f"{k}: {v}" for k, v in sc.items() if v > 0)
+
+    lines = [
+        f"Career Sweep {period} - {date_str}",
+        f"Run at {time_str}",
+        "",
+        f"Total: {len(jobs)} | HIGH: {len(high)} | MEDIUM: {len(medium)} | LOW: {len(low)}",
+        f"Las Vegas: {len(vegas)} | Remote US: {len(remote)}",
+        f"Raw jobs processed: {total_scanned}",
+        f"Sources: {source_line}",
+        "",
+        "=" * 60,
+    ]
+
+    def add_section(label, section_jobs):
+        if not section_jobs:
+            return
+        lines.append("")
+        lines.append(label)
+        lines.append("-" * 40)
+        for j in section_jobs:
+            loc_display = j["location"] or "Unlisted"
+            lines.append(f"  {j['company']}")
+            lines.append(f"    {j['title']}")
+            lines.append(f"    {loc_display}")
+            lines.append(f"    {j['url']}")
+            lines.append(f"    Score: {j['score']}/25 | {j['source']}")
+            lines.append("")
+
+    add_section("HIGH PRIORITY (15+)", high)
+    add_section("MEDIUM PRIORITY (8-14)", medium)
+
+    if low:
+        lines.append("")
+        lines.append(f"LOW PRIORITY ({len(low)} roles)")
+        lines.append("-" * 40)
+        for j in low:
+            lines.append(f"  {j['company']} | {j['title']} | {j['location']} | Score: {j['score']}")
+
+    if errors:
+        lines.append("")
+        lines.append("Errors:")
+        for e in errors:
+            lines.append(f"  - {e}")
+
+    lines.extend([
+        "",
+        "=" * 60,
+        "",
+        "Scoring: Sr IT Manager=9, IT Manager=8",
+        "Vegas=+5, Remote=+3, Top Tech Co=+3",
+        "",
+        "- Career Sweep v2.0",
+    ])
+
+    return "\n".join(lines)
+
+
+def send_email(subject, body):
+    """Send email via iCloud SMTP."""
+    msg = EmailMessage()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            s.ehlo()
+            s.starttls(context=ssl.create_default_context())
+            s.ehlo()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Email failed: {e}")
+        return False
