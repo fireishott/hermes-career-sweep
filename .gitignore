@@ -1,2 +1,21 @@
-data/
+# Runtime / generated data
+node_modules/
+.env
+portals.yml
+output/
+reports/
+data/*.tsv
+data/*.md
+data/*.json
+data/*.txt
+*.pdf
+*.html
+
+# Python
 __pycache__/
+*.pyc
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

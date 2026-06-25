@@ -1,0 +1,46 @@
+{
+  "name": "hermes-career-sweep",
+  "version": "0.1.0",
+  "description": "Hermes Agent job sweep workflow: scan live roles, render tailored resume PDFs, and email mobile-ready apply links.",
+  "private": false,
+  "scripts": {
+    "doctor": "node doctor.mjs",
+    "verify": "node verify-pipeline.mjs",
+    "normalize": "node normalize-statuses.mjs",
+    "dedup": "node dedup-tracker.mjs",
+    "merge": "node merge-tracker.mjs",
+    "pdf": "node generate-pdf.mjs",
+    "sync-check": "node cv-sync-check.mjs",
+    "update:check": "node update-system.mjs check",
+    "update:test": "node updater-migration-tests.mjs",
+    "update": "node update-system.mjs apply",
+    "rollback": "node update-system.mjs rollback",
+    "liveness": "node check-liveness.mjs",
+    "scan": "node scan.mjs",
+    "scan:full": "node scan-ats-full.mjs",
+    "validate:portals": "node validate-portals.mjs",
+    "tracker": "node tracker.mjs",
+    "patterns": "node analyze-patterns.mjs",
+    "gemini:eval": "node gemini-eval.mjs"
+  },
+  "keywords": [
+    "hermes-agent",
+    "job-search",
+    "resume",
+    "career-ops",
+    "automation"
+  ],
+  "author": "Santiago Fernández de Valderrama and contributors",
+  "homepage": "https://github.com/fireishott/hermes-career-sweep",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fireishott/hermes-career-sweep"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.0.0",
+    "js-yaml": "^4.1.1",
+    "playwright": "1.58.1"
+  }
+}

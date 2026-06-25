@@ -1,0 +1,54 @@
+# Copy to portals.yml and edit for your search.
+# This example uses ATS/API-backed company portals so the scanner can fetch jobs without burning LLM tokens.
+
+title_filter:
+  positive:
+    - business systems
+    - IT operations
+    - infrastructure
+    - enterprise technology
+    - solutions engineer
+    - forward deployed
+    - AI enablement
+  negative:
+    - intern
+    - internship
+    - junior
+    - sales development
+    - account executive
+    - designer
+
+location_filter:
+  always_allow:
+    - remote
+    - united states
+    - usa
+  allow: []
+  block:
+    - onsite only
+
+salary_filter:
+  min: 0
+  max: 0
+  currency: USD
+
+tracked_companies:
+  - name: Figma
+    enabled: true
+    provider: greenhouse
+    careers_url: https://boards.greenhouse.io/figma
+
+  - name: Anthropic
+    enabled: true
+    provider: greenhouse
+    careers_url: https://boards.greenhouse.io/anthropic
+
+  - name: Stripe
+    enabled: true
+    provider: greenhouse
+    careers_url: https://boards.greenhouse.io/stripe
+
+  - name: OpenAI
+    enabled: true
+    provider: greenhouse
+    careers_url: https://boards.greenhouse.io/openai
