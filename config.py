@@ -1,14 +1,18 @@
-"""Career sweep configuration - IT Manager and Sr IT Manager only."""
+"""Career sweep configuration - customizable per user."""
 
-# SMTP
-SMTP_HOST = "smtp.mail.me.com"
-SMTP_PORT = 587
-SMTP_USER = "fihassistant@icloud.com"
-SMTP_PASS = "oqta-eehk-twjn-ycpk"
-EMAIL_FROM = "fihassistant@icloud.com"
-EMAIL_TO = "freemancurtisd@gmail.com"
+import os
 
-# Target roles: IT Manager and Sr IT Manager ONLY
+# SMTP - use environment variables, NOT hardcoded credentials
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.mail.me.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_TO = os.getenv("EMAIL_TO")
+
+# Target roles - customize per user
+# Default: IT Manager and Sr IT Manager
+# Change EXACT_PHRASES and LEADERSHIP_TERMS to match your target role
 EXACT_PHRASES = [
     "it manager",
     "sr it manager",

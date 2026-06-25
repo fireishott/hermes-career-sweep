@@ -137,8 +137,15 @@ def scrape_page(url, company_name, session_key=None):
     return results
 
 
-def search_linkedin(queries):
-    """Search LinkedIn Jobs with authenticated CamoFox session."""
+def search_linkedin(queries, email=None, password=None):
+    """Search LinkedIn Jobs with authenticated CamoFox session.
+    
+    Email and password should be passed as args (from env var or config).
+    Do NOT hardcode credentials.
+    """
+    if not email or not password:
+        return []  # Skip if no credentials provided
+    
     results = []
     try:
         # Login flow
@@ -148,29 +155,29 @@ def search_linkedin(queries):
         time.sleep(8)
 
         # Fill credentials via native setter
-        login_js = """
-        (function() {
+        login_js = f"""
+        (function() {{
             var ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
             var email = document.querySelector('input[type="email"]');
             var pass = document.querySelector('input[type="password"]');
             if (!email || !pass) return 'FORM_MISSING';
-            email.focus(); ns.call(email, 'freemancurtisd@gmail.com');
-            email.dispatchEvent(new Event('input', {bubbles: true}));
-            email.dispatchEvent(new Event('change', {bubbles: true}));
+            email.focus(); ns.call(email, {json.dumps(email)});
+            email.dispatchEvent(new Event('input', {{bubbles: true}}));
+            email.dispatchEvent(new Event('change', {{bubbles: true}}));
             email.blur();
-            pass.focus(); ns.call(pass, '11aaxx2wr');
-            pass.dispatchEvent(new Event('input', {bubbles: true}));
-            pass.dispatchEvent(new Event('change', {bubbles: true}));
+            pass.focus(); ns.call(pass, {json.dumps(password)});
+            pass.dispatchEvent(new Event('input', {{bubbles: true}}));
+            pass.dispatchEvent(new Event('change', {{bubbles: true}}));
             pass.blur();
             var buttons = document.querySelectorAll('button');
-            for (var j = 0; j < buttons.length; j++) {
-                if (buttons[j].innerText.trim() === 'Sign in') {
+            for (var j = 0; j < buttons.length; j++) {{
+                if (buttons[j].innerText.trim() === 'Sign in') {{
                     buttons[j].click();
                     return 'submitted';
-                }
-            }
+                }}
+            }}
             return 'NO_SUBMIT';
-        })()
+        }})()
         """
         evaluate(tab_id, login_js)
         time.sleep(8)
@@ -291,17 +298,25 @@ CAMOFOX_CAREER_PAGES = [
 ]
 
 
-def scan_camofox_boards():
-    """Scan all CamoFox-protected boards."""
+def scan_camofox_boards(linkedin_email=None, linkedin_password=None):
+    """Scan all CamoFox-protected boards.
+    
+    Args:
+        linkedin_email: LinkedIn email (from env or config)
+        linkedin_password: LinkedIn password (from env or config)
+    """
     all_results = []
     all_errors = []
 
-    # LinkedIn (authenticated)
-    try:
-        results = search_linkedin(CAMOFOX_LINKEDIN_QUERIES)
-        all_results.extend(results)
-    except Exception as e:
-        all_errors.append(f"linkedin: {e}")
+    # LinkedIn (authenticated) - only if credentials provided
+    if linkedin_email and linkedin_password:
+        try:
+            results = search_linkedin(CAMOFOX_LINKEDIN_QUERIES, linkedin_email, linkedin_password)
+            all_results.extend(results)
+        except Exception as e:
+            all_errors.append(f"linkedin: {e}")
+    else:
+        all_errors.append("LinkedIn scraping skipped - no credentials provided")
 
     # Career pages
     for url, company in CAMOFOX_CAREER_PAGES:
