@@ -1,344 +1,251 @@
-# Hermes Career Sweep
+# Hermes Career Sweep v2.0
 
-A shareable Hermes Agent job-search workflow — parallel subagent pipeline that scans priority job boards, verifies live postings, ranks by fit, and emails results with direct apply links.
+Focused IT Manager and Sr IT Manager job sweep. Parallel sources (ATS APIs + board scraping) with stealth browsing, intelligent filtering, and email delivery.
 
-Built on [`career-ops`](https://github.com/santifer/career-ops) by santifer. Upstream README preserved as [`CAREER_OPS_README.md`](./CAREER_OPS_README.md). Credits in [`ACKNOWLEDGMENTS.md`](./ACKNOWLEDGMENTS.md).
+Built on [`career-ops`](https://github.com/santifer/career-ops) upstream. Credits in [`ACKNOWLEDGMENTS.md`](./ACKNOWLEDGMENTS.md).
 
-## What this adds
+---
 
-- **Subagent architecture** — one orchestrator spawns 4 parallel subagents, each scanning a different board category. Eliminates single-agent timeout on long sweeps.
-- **Stealth browser integration** — CamoFox (anti-bot) and Byparr (Cloudflare bypass) for scraping protected job boards that block standard requests.
-- **ATS/API-first scan** — `scan.mjs` hits Greenhouse, Ashby, and Lever APIs directly (zero LLM cost).
-- **100+ job boards** — comprehensive coverage across aggregators, remote specialists, tech, executive, and local sources.
-- **Clean email output** — results arrive as a formatted table with direct apply links, grouped by fit tier, no walls of text.
-- **Liveness verification** — Playwright checks confirm each listing is still live before including in results.
-- **Tailored resume rendering** — generates per-role PDFs from a base resume + job description.
-- **Deduplication** — cross-references against applied companies and self-duplicates across boards.
+## What's New (v2.0)
+
+- **Narrow focus** — IT Manager and Sr IT Manager only (no Directors, VPs, engineering managers)
+- **Two-part title filter** — exact phrases (e.g., "IT Manager") + leadership+domain combos (e.g., "Senior Manager, IT Operations")
+- **ATS API scan** — 31 companies via Greenhouse, Ashby, Lever, Workday (11 seconds, zero LLM overhead)
+- **Stealth modules** — Byparr (Indeed/Glassdoor bypass), CamoFox (LinkedIn auth), nodriver (career pages), direct requests
+- **Smart scoring** — Sr IT Manager=9, IT Manager=8, Vegas=+5, Remote=+3, Top Tech Co=+3
+- **Location filter** — US-only (Remote US, Las Vegas, US cities). Rejects international-only listings
+- **Email delivery** — iCloud SMTP, formatted table, HIGH/MEDIUM/LOW tiers
+- **Cron schedule** — 6am/1pm PT daily
+- **Dedup tracking** — seen.json and applied.json prevent re-scanning
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   ORCHESTRATOR                      │
-│              (1 agent, top-level)                   │
-│                                                     │
-│  1. Get today's date                                │
-│  2. Spawn 4 subagents in parallel                   │
-│  3. Compile results                                 │
-│  4. Deduplicate                                     │
-│  5. Rank by fit                                     │
-│  6. Email clean results                             │
-│  7. Update tracker                                  │
-└──────────────────┬──────────────────────────────────┘
-                   │
-        ┌──────────┼──────────┬──────────────┐
-        ▼          ▼          ▼              ▼
-   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐
-   │ SUB A   │ │ SUB B   │ │ SUB C   │ │ SUB D    │
-   │ ATS     │ │ Stealth │ │ Remote/ │ │ Local    │
-   │ Scan    │ │ Boards  │ │ Tech    │ │ Boards   │
-   └─────────┘ └─────────┘ └─────────┘ └──────────┘
+┌────────────────────────────────────┐
+│       Python ATS API Scan          │
+│  (31 companies, 11s, 1-6 jobs)     │
+└──────────────┬─────────────────────┘
+               │
+         ┌─────▼──────┐
+         │  Agent     │
+         │ web_extract
+         │ (45+ boards)
+         │  ~2 min    │
+         └─────┬──────┘
+               │
+      ┌────────▼─────────┐
+      │  Dedupe + Score  │
+      │  Location Filter │
+      └────────┬─────────┘
+               │
+         ┌─────▼──────┐
+         │    Email   │
+         │  iCloud    │
+         │    SMTP    │
+         └────────────┘
 ```
 
-### Subagent A: ATS Scan
-- Runs `node scan.mjs` from the career-ops repo
-- Scans Greenhouse, Ashby, and Lever ATS boards via API
-- Returns matching roles as JSON
+### Step 1: ATS API Scan
 
-### Subagent B: Stealth Browser Boards
-- **Indeed** — Byparr (Cloudflare bypass): `POST http://127.0.0.1:8191/v1`
-- **LinkedIn** — CamoFox (authenticated login with your credentials)
-- **Glassdoor** — Byparr (Cloudflare bypass)
-- **Google Jobs** — CamoFox for `jobs.google.com` searches
-- Returns matching roles with direct apply links where possible
+- Greenhouse (Anthropic, OpenAI, Stripe, Cloudflare, Datadog, Snowflake, Airtable, Samsara, Twilio, etc.)
+- Ashby (Figma, Vercel, Databricks, etc.)
+- Lever (Retool, Tinybird, etc.)
+- Workday (Salesforce, Genesys)
+- Plus dedicated scrapers: MGM Resorts, Caesars, Station Casinos
 
-### Subagent C: Tech & Remote Boards
-- **web_search** each board individually:
-  - Dice, Built In, We Work Remotely, Remote100K, FlexJobs, Wellfound, The Ladders, 6FigureJobs
-  - General queries: "IT Manager remote", "Senior IT Manager remote", "IT Infrastructure Manager"
-- Returns matching roles as JSON
+**Output:** 10-15 raw matches, filtered to 1-6 by role.
 
-### Subagent D: Local & Regional Boards
-- **web_search** each employer/board:
-  - Local companies, state job portals, regional employers
-  - Employer career pages with known ATS systems
-- Returns matching roles as JSON
+### Step 2: Board Scraping (Agent-Driven)
 
-Each subagent gets its own isolated context and terminal session. Results are merged, deduplicated, and ranked by the orchestrator.
+Nine batches of `web_extract` across 45+ boards:
+
+- **Mega Aggregators** — Indeed, Glassdoor, ZipRecruiter, Monster, CareerBuilder, Jooble, Adzuna, Talent.com, LinkedIn
+- **Dice & Tech** — Dice, Builtin, Wellfound, Cybersecurity Jobs, AI-Jobs.net
+- **Remote Specialists** — WeWorkRemotely, RemoteOK, Remotive, Remote.co, Virtual Vocations, Working Nomads, Jobspresso, JustRemote, RemoteRocketship, FlexJobs
+- **Executive** — The Ladders, IvyExec, 6FigureJobs
+- **Vegas Local** — MGM, Caesars, Wynn, Station Casinos, Clark County, City of Las Vegas
+- **Government** — USAJobs, GovernmentJobs, Nevada JobConnect
+- **Startup** — Wellfound, WorkAtAStartup, Startup Jobs
+- **Other** — Adzuna, Talent.com, LinkUp, Getwork, HiringCafe, ClearanceJobs, NoDesk, Pangian, Braintrust
+
+### Step 3: Role Filter
+
+**Must match one of:**
+
+- Exact phrases: "IT Manager", "Sr IT Manager", "Senior IT Manager", "IT Operations Manager", "Infrastructure Manager"
+- Leadership + domain: ("Senior Manager" OR "Sr Manager" OR "Manager") + ("IT" OR "Infrastructure" OR "Technology Operations")
+
+**Rejected:** Directors, VPs, engineering managers, product managers, campaign managers, recruiting, sales, marketing, data science, nurses, bartenders, etc.
+
+### Step 4: Location Filter
+
+**Accepted:**
+- "Remote US", "Remote, US", "Anywhere", "Work from home"
+- Las Vegas, Reno, Henderson, North Las Vegas (Nevada only)
+- US cities (New York, Boston, Seattle, SF, LA, Chicago, Austin, Denver, etc.)
+
+**Rejected:**
+- International-only (UK-only, Germany-only, Canada only, etc.)
+- No location specified
+
+### Step 5: Dedup & Score
+
+- **Deduplicate** on company + title (case-insensitive)
+- **Score:** base + bonuses
+  - Sr IT Manager: 9
+  - IT Manager: 8
+  - IT Operations Manager: 8
+  - Infrastructure Manager: 8
+  - Las Vegas: +5
+  - Remote US: +3
+  - Top Tech Co (Google, Meta, Apple, etc.): +3
+- **Labels:** HIGH (15+), MEDIUM (8-14), LOW (<8)
+
+### Step 6: Email Report
+
+Formatted text report emailed to `freemancurtisd@gmail.com` via `fihassistant@icloud.com`:
+
+```
+Career Sweep Morning - 2026-06-25
+Run at 08:49 AM PT
+
+Total: 4 | HIGH: 0 | MEDIUM: 4 | LOW: 0
+Las Vegas: 1 | Remote US: 0
+Raw jobs processed: 16
+Sources: ats: 1 | boards: 15
+
+============================================================
+
+MEDIUM PRIORITY (8-14)
+----------------------------------------
+  Lendbuzz
+    Senior Manager, IT Systems
+    Boston, MA
+    https://www.dice.com/job-detail/5d5005d3-61ac-4744-9d2d-a7d0945a309b
+    Score: 9/25 | dice
+
+  inKind
+    IT Manager
+    Austin, TX
+    https://builtin.com/job/it-manager/9873125
+    Score: 8/25 | builtin
+```
 
 ---
 
-## Job Board Master List
+## Usage
 
-100+ boards across 10 categories. The pipeline scans all of them — no cherry-picking.
-
-### Mega Aggregators (must-scan every run)
-
-| Board | Access Method | Notes |
-|-------|---------------|-------|
-| Indeed | Byparr (`POST http://127.0.0.1:8191/v1`) | Cloudflare protected. Byparr required. |
-| LinkedIn Jobs | CamoFox (authenticated) | Login flow required. CAPTCHA may trigger on VPN. |
-| Glassdoor | Byparr | Cloudflare protected. Byparr required. |
-| Google Jobs | CamoFox or web_search | `jobs.google.com` — best single source when it renders. |
-| ZipRecruiter | Byparr or web_search | |
-| Monster | web_search | |
-| CareerBuilder | web_search | |
-| SimplyHired | web_search | |
-
-### Remote Specialists
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| We Work Remotely | weworkremotely.com | Curated remote listings |
-| RemoteOK | remoteok.com | |
-| Remote.co | remote.co | |
-| FlexJobs | flexjobs.com | Paid model, use web_search |
-| Remotive | remotive.com | Tech remote jobs |
-| Working Nomads | workingnomads.com | |
-| Jobspresso | jobspresso.co | Remote tech jobs |
-
-### High-Paying / Executive
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| The Ladders | theladders.com | $100K+ focus |
-| 6FigureJobs | 6figurejobs.com | |
-| Hired | hired.com | Vetted candidates |
-| Lenny's Jobs | lennysjobs.com | Product/tech |
-| Built In | builtin.com | Tech companies, salary data |
-
-### Tech-Specific
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| Dice | dice.com | IT & tech primary |
-| Built In | builtin.com | Local + remote tech |
-| GitHub Jobs | jobs.github.com | Engineering |
-| Stack Overflow Jobs | stackoverflow.com/jobs | |
-| Hacker News (Who's Hiring) | news.ycombinator.com | Monthly threads |
-| AngelList / Wellfound | wellfound.com | Startup jobs, equity data |
-| Otta | otta.com | Tech-focused |
-| Braintrust | talent.chainbraintrust.com | Web3/remote |
-| Turing | turing.com | Remote dev roles |
-
-### Executive / Professional
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| Ladders | theladders.com | $100K+ |
-| ExecuNet | execunet.com | Executive network |
-| Robert Half | roberthalf.com | |
-| Kforce | kforce.com | IT staffing |
-| TEKsystems | teksystems.com | IT staffing |
-
-### Federal / Government
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| USAJobs | usajobs.gov | Federal positions |
-| GovernmentJobs | governmentjobs.com | State and local |
-| ClearanceJobs | clearancejobs.com | Security clearance |
-| IntelligenceCareers | iccareers.gov | |
-
-### Staffing / Agencies
-
-| Board | URL | Notes |
-|-------|-----|-------|
-| Robert Half | roberthalf.com | |
-| Kforce | kforce.com | |
-| TEKsystems | teksystems.com | |
-| Insight Global | insightglobal.com | |
-| Aerotek | aerotek.com | |
-| Randstad | randstad.com | |
-| Adecco | adecco.com | |
-
-### Aggregator / Meta-Search Tools
-
-| Tool | URL | Notes |
-|------|-----|-------|
-| Jobscan | jobscan.co | Resume vs JD matching |
-| Huntr | huntr.co | Job tracking + search |
-| Teal | tealhq.com | Job search tracker |
-| LoopCV | loopcv.me | Auto-apply tool |
-| LazyApply | lazyapply.com | Auto-apply |
-| Sonara | sonara.ai | AI job matching |
-
-### Research / Signal
-
-| Source | URL | Notes |
-|--------|-----|-------|
-| Levels.fyi | levels.fyi | Comp data |
-| Glassdoor | glassdoor.com | Reviews + salary |
-| Blind | teamblind.com | Anonymous insider info |
-| Fishbowl | joinfishbowl.com | Professional discussions |
-| Built In | builtin.com | Company + salary data |
-
----
-
-## Results Email Format
-
-Clean, scannable, no walls of text. Direct apply links to specific postings.
-
-```
-Job Sweep Morning — 2026-06-23 — 12 Prospects
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IT MANAGER / SR MANAGER
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Company              | Title                    | Location     | Apply Link                           | Source
-Acme Corp            | IT Operations Manager    | Remote       | https://boards.greenhouse.io/acme/123  | Dice
-TechCo               | Sr IT Manager            | Remote US    | https://lever.co/techco/456           | LinkedIn
-FinanceGroup         | IT Infrastructure Mgr    | Hybrid       | https://workday.com/fingroup/789       | Indeed
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DIRECTOR+ (Remote/Vegas Only)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Company              | Title                    | Location     | Apply Link                           | Source
-BigCo                | Director of IT Ops       | Remote       | https://greenhouse.io/bigco/101       | Built In
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SUMMARY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Total: 12 prospects
-Remote: 8 | Local: 4 | $130K+: 6
-Already applied: 3 removed | Duplicates: 5 removed
-```
-
-### Email rules
-- **Direct apply links only.** Never `company.com/careers` — find the specific posting URL (ATS board URL preferred).
-- **Apply link must point to the specific posting**, not the company's careers homepage.
-- Group by score tier (IT Manager/Sr Manager first, Director+ second).
-- Footer with totals: remote count, local count, salary bracket breakdown.
-- Sent via Python `smtplib` (no external dependencies).
-
----
-
-## Quick Start
+### ATS Scan Only
 
 ```bash
-npm install
-cp portals.example.yml portals.yml
-cp .env.example .env
+cd /home/fihadmin/career-sweep
+python3 sweep.py scan --json
 ```
 
-Edit:
-- `examples/base-resume.json` — replace with your factual resume data.
-- `portals.yml` — set companies, keywords, location and salary filters.
-- `.env` — set `JOB_SWEEP_EMAIL_TO`, resume output path, and optional Chrome path.
+Returns JSON with 31 companies, filtered roles, and scores.
 
-Run a dry test with a sample job:
-```bash
-python3 scripts/run-sweep.py --dry-run --send-email --sample-job-json examples/sample-job.json --max-resumes 1
-```
-
-### Running the scanner
-
-**ATS mode** (automatic): Companies with Greenhouse, Ashby, or Lever boards are scanned via API with zero LLM cost. `scan.mjs` auto-detects the provider and pulls all live listings.
-
-**Websearch mode**: Companies without scannable ATS boards use a `scan_query` field in `portals.yml`. The agent runs web searches for these companies during the cron run.
+### Full Sweep (Local, for Testing)
 
 ```bash
-node scan.mjs --dry-run    # preview
-node scan.mjs              # real scan → writes to data/pipeline.md
+cd /home/fihadmin/career-sweep
+rm -f data/seen.json
+python3 sweep.py scan --json  # Step 1: ATS APIs
+# Step 2: agent does web_extract on 45+ boards (in cron)
+python3 sweep.py merge --board-results data/board-results-YYYY-MM-DD.json --ats-results data/ats-YYYY-MM-DD.json --json
 ```
 
-### Email setup
+### Cron Schedule
 
-```bash
-python3 scripts/send-resume-email.py \
-  --account your-account \
-  --to you@example.com \
-  --subject 'Test resume email' \
-  --body 'Testing attachments' \
-  --attach /path/to/resume.pdf \
-  --dry-run
 ```
+0 6,13 * * *   (6am / 1pm PT, daily)
+```
+
+Agent-driven: runs ATS scan, scrapes all boards via web_extract in batches, merges, dedupes, scores, emails.
 
 ---
 
-## Hermes Cron Prompt Skeleton
+## Configuration
 
-```text
-Curtis Freeman job sweep — parallel subagent architecture. You are the ORCHESTRATOR.
+### `config.py`
 
-TARGETS:
-PRIMARY: IT Manager, Sr IT Manager, IT Operations Manager, IT Infrastructure Manager,
-Service Delivery Manager, Desktop Engineering Manager, Endpoint Manager, IT Program Manager,
-Workplace Technology Manager, IT Service Manager.
+- **SMTP:** `smtp.mail.me.com` (iCloud) — credentials in env or config
+- **Target roles:** "IT Manager", "Sr IT Manager", "Senior IT Manager", "IT Operations Manager", "Infrastructure Manager"
+- **Leadership + domain combos:** "Manager" / "Senior Manager" + "IT" / "Infrastructure" / "Technology"
+- **Scoring:** Sr IT Manager=9, IT Manager=8, Vegas=+5, Remote=+3, Top Tech=+3
+- **ATS companies:** 31 entries (Greenhouse, Ashby, Lever, Workday slugs)
 
-SECONDARY: IT Director, Director of IT Operations — ONLY include if 100% remote and a
-clear operations/infrastructure fit.
+### `sources/`
 
-LOCATION: Remote (anywhere US) or local ONLY. No relocation-required roles.
-SALARY: $130K+ preferred. Include $100K-$129K if strong fit. Skip below $100K.
+| Module | Purpose |
+|---|---|
+| `ats.py` | Greenhouse, Ashby, Lever, Workday API queries |
+| `byparr.py` | Indeed, Glassdoor via Byparr (Cloudflare bypass, port 8191) |
+| `camofox.py` | LinkedIn authenticated search via CamoFox (port 9377) |
+| `nodriver.py` | Career pages via nodriver browser (no interaction, port 8901) |
+| `direct.py` | Direct HTTP requests (Dice, RemoteOK, etc.) |
+| `utils.py` | Shared: `ok_title()`, `clean()`, `score_title()` |
 
-SPAWN 4 SUBAGENTS IN PARALLEL using delegate_task (tasks array):
+### Stealth Tools
 
-SUBAGENT A (workdir /home/fihadmin/job-sweep):
-Run `node scan.mjs`, then read data/pipeline.md. Filter to matching roles.
-Return JSON: [{"company", "title", "location", "url", "source":"ATS", "location_type"}]
+| Tool | Port | Use |
+|---|---|---|
+| Byparr | 8191 | Cloudflare bypass (Indeed, Glassdoor, ZipRecruiter) |
+| nodriver | 8901 | Browser fetch, no interaction (career pages) |
+| CamoFox | 9377 | Full browser with interaction (LinkedIn auth) |
 
-SUBAGENT B (Stealth browser boards):
-Indeed via Byparr. LinkedIn via CamoFox (auth: your@email.com / your-password).
-Glassdoor via Byparr. Google Jobs via CamoFox.
-Return JSON with direct apply links.
-
-SUBAGENT C (Tech/remote boards):
-web_search: Dice, Built In, We Work Remotely, Remote100K, FlexJobs, Wellfound, Ladders.
-Return JSON list.
-
-SUBAGENT D (Local/regional boards):
-web_search: Local employers, state portals, regional companies.
-Return JSON list.
-
-AFTER SUBAGENTS:
-1. Merge all results
-2. Deduplicate (same company + similar title → keep best URL)
-3. Rank: Remote > Local. IT Manager/Sr Manager > Director.
-4. Clean email: table with Company | Title | Location | Apply URL | Source
-5. Group: IT Manager section first, Director section second
-6. Email from your address via smtplib
-7. Update tracker
-```
+All three are optional — if unavailable, agent web_extract falls back (slower but works).
 
 ---
 
-## Stealth Browser Setup
+## Results
 
-The pipeline uses two self-hosted services for scraping protected job boards:
+### E2E Test (2026-06-25)
 
-### CamoFox (primary stealth browser)
-- **URL:** `http://127.0.0.1:9377`
-- **Auth:** Set via `CAMOFOX_API_KEY` environment variable (see `.env.example`)
-- **Use for:** All board scraping, login flows, SPA interaction
-- **How it works:** C++ engine-level anti-bot bypass. Not JS injection — actual browser fingerprinting evasion.
-- **Best for:** LinkedIn (authenticated), Google Jobs, any site with bot detection
+- **ATS scan:** 1 match (Anthropic, Senior Manager, Compute Infrastructure)
+- **Board scrape:** 15 raw jobs (Dice, Builtin, Talent.com, USAJobs)
+- **After filter:** 4 final (2 Sr IT Manager, 2 IT Manager)
+- **Scores:** HIGH=0, MEDIUM=4, LOW=0
+- **Vegas:** 1 | **Remote:** 0
+- **Email:** Sent ✅
+- **Time:** ~2 min end-to-end
 
-### Byparr (Cloudflare/CAPTCHA bypass)
-- **URL:** `http://127.0.0.1:8191/v1`
-- **Auth:** None (FlareSolverr-compatible API)
-- **Use for:** Indeed, Glassdoor — sites behind Cloudflare that block standard requests
-- **How it works:** Solves Cloudflare challenges and passes cookies for subsequent requests
+### Next Run
 
-### Failover order
-1. Try CamoFox first
-2. If blocked/CAPTCHA'd → try Byparr
-3. If both fail → flag as UNVERIFIED, include with warning
+6am PT today.
 
 ---
 
-## Notes
+## Data
 
-- Generated resumes and scan data are gitignored.
-- This is an agent workflow, not an application bot. It prepares materials; you still decide where to apply.
-- Keep facts factual. Tailoring should emphasize relevant experience, not fabricate new experience.
-- Subagents have no memory of the orchestrator's conversation. All instructions must be self-contained in the `delegate_task` prompt.
+### `data/` Directory
+
+- `seen.json` — SHA256 hashes of company+title combos already scanned
+- `applied.json` — Companies you've applied to (to avoid duplicates)
+- `ats-YYYY-MM-DD.json` — ATS API results
+- `board-results-YYYY-MM-DD.json` — Web scrape results
+- `results-YYYY-MM-DD.json` — Final merged, ranked jobs
+- `sweep-YYYY-MM-DD-*.txt` — Email report
+
+All data files are `.gitignore`-d.
+
+---
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+---
 
 ## License
 
-MIT. See [`LICENSE`](./LICENSE). Upstream copyright and license terms are preserved.
+MIT. See [`LICENSE`](./LICENSE) or upstream [`CAREER_OPS_README.md`](./CAREER_OPS_README.md).
+
+---
+
+## Upstream Credits
+
+This project extends [`career-ops`](https://github.com/santifer/career-ops) by santifer.
+
+See [`ACKNOWLEDGMENTS.md`](./ACKNOWLEDGMENTS.md) for full credits.

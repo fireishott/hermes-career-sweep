@@ -1,377 +1,433 @@
-# Career-Ops -- AI Job Search Pipeline
+# Hermes Career Sweep v2.0 — Implementation Guide
 
-## Origin
+Focused IT Manager and Sr IT Manager job search. Parallel ATS APIs + board scraping with stealth browsing.
 
-This system was built and used by [santifer](https://santifer.io) to evaluate 740+ job offers, generate 100+ tailored CVs, and land a Head of Applied AI role. The archetypes, scoring logic, negotiation scripts, and proof point structure all reflect his specific career search in AI/automation roles.
+---
 
-The portfolio that goes with this system is also open source: [cv-santiago](https://github.com/santifer/cv-santiago).
+## Architecture at a Glance
 
-**It will work out of the box, but it's designed to be made yours.** If the archetypes don't match your career, the modes are in the wrong language, or the scoring doesn't fit your priorities -- just ask. You (AI Agent) can edit the user's files. The user says "change the archetypes to data engineering roles" and you do it. That's the whole point.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Python ATS Scan                          │
+│  sweep.py scan --json → 31 companies, ~11s, 1-6 jobs       │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                ┌────────▼────────┐
+                │   Cron Job      │
+                │  6am/1pm PT     │
+                │  Runs Agent     │
+                │  web_extract    │
+                │  45+ boards     │
+                └────────┬────────┘
+                         │
+            ┌────────────┴────────────┐
+            │   Dedupe + Score        │
+            │   Location Filter       │
+            │   seen.json tracking    │
+            └────────────┬────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │   Email     │
+                  │   SMTP      │
+                  │   Report    │
+                  └─────────────┘
+```
 
-## Data Contract (CRITICAL)
+---
 
-There are two layers. Read `DATA_CONTRACT.md` for the full list.
+## File Structure
 
-**User Layer (NEVER auto-updated, personalization goes HERE):**
-- `cv.md`, `config/profile.yml`, `modes/_profile.md`, `article-digest.md`, `portals.yml`
-- `data/*`, `reports/*`, `output/*`, `interview-prep/*`
+```
+/home/fihadmin/career-sweep/
+├── sweep.py                 # Main orchestrator (ATS scan + merge pipeline)
+├── config.py                # Roles, scoring, ATS companies, SMTP
+├── pipeline.py              # Dedupe, rank, seen tracking, email helper
+├── mail.py                  # format_report(), send_email()
+├── sources/
+│   ├── utils.py             # ok_title(), clean(), score_title()
+│   ├── ats.py               # Greenhouse, Ashby, Lever, Workday APIs
+│   ├── byparr.py            # Indeed, Glassdoor (via Byparr, port 8191)
+│   ├── camofox.py           # LinkedIn auth (via CamoFox, port 9377)
+│   ├── nodriver.py          # Career pages (via nodriver, port 8901)
+│   └── direct.py            # HTTP requests (Dice, RemoteOK, etc.)
+├── data/
+│   ├── seen.json            # Company+title SHA256 hashes (avoid rescans)
+│   ├── applied.json         # Companies already applied to
+│   ├── ats-*.json           # ATS API results
+│   ├── board-results-*.json # Web scrape results
+│   ├── results-*.json       # Final merged, ranked jobs
+│   └── sweep-*.txt          # Email report
+├── README.md                # User-facing overview
+├── CLAUDE.md                # This file
+└── .gitignore               # data/ + __pycache__
+```
 
-**System Layer (auto-updatable, DON'T put user data here):**
-- `modes/_shared.md`, `modes/oferta.md`, all other modes
-- `CLAUDE.md`, `*.mjs` scripts, `dashboard/*`, `templates/*`, `batch/*`
+---
 
-**THE RULE: When the user asks to customize anything (archetypes, narrative, negotiation scripts, proof points, location policy, comp targets), ALWAYS write to `modes/_profile.md` or `config/profile.yml`. NEVER edit `modes/_shared.md` for user-specific content.** This ensures system updates don't overwrite their customizations.
+## Key Modules
 
-## Update Check
+### `sweep.py`
 
-On the first message of each session, run the update checker silently:
+**Main CLI:**
 
 ```bash
-node update-system.mjs check
+python3 sweep.py scan --json          # ATS APIs only
+python3 sweep.py merge \
+  --board-results data/board-results-*.json \
+  --ats-results data/ats-*.json \
+  --json                                # Merge, score, email
 ```
 
-Parse the JSON output:
-- `{"status": "update-available", "local": "1.0.0", "remote": "1.1.0", "changelog": "..."}` → tell the user:
-  > "career-ops update available (v{local} → v{remote}). Your data (CV, profile, tracker, reports) will NOT be touched. Want me to update?"
-  If yes → run `node update-system.mjs apply`. If no → run `node update-system.mjs dismiss`.
-- `{"status": "up-to-date"}` → say nothing
-- `{"status": "dismissed"}` → say nothing
-- `{"status": "offline"}` → say nothing
-- `{"status": "no-remote-version"}` → say nothing (checker reached GitHub but neither VERSION nor the latest release tag parsed as semver — treat as a silent non-failure, same as offline)
+**Functions:**
 
-The user can also say "check for updates" or "update career-ops" at any time to force a check.
-To rollback: `node update-system.mjs rollback`
+- `run_ats_scan()` — hits 31 ATS companies, filters to IT Manager/Sr IT Manager, returns JSON
+- `merge_and_email(board_jobs, ats_result)` — combines board + ATS results, dedupes, scores, emails
+- Returns: `{status, elapsed_seconds, raw_matches, filtered, high/medium/low, jobs, errors}`
 
-## What is career-ops
+### `config.py`
 
-AI-powered job search automation built on Claude Code: pipeline tracking, offer evaluation, CV generation, portal scanning, batch processing.
+**Roles:**
 
-### Main Files
+```python
+EXACT_PHRASES = [
+    "it manager", "sr it manager", "senior it manager",
+    "it operations manager", "infrastructure manager",
+]
 
-| File | Function |
-|------|----------|
-| `data/applications.md` | Application tracker |
-| `data/pipeline.md` | Inbox of pending URLs |
-| `data/scan-history.tsv` | Scanner dedup history |
-| `portals.yml` | Query and company config |
-| `templates/cv-template.html` | HTML template for CVs |
-| `templates/cv-template.tex` | LaTeX/Overleaf template for CVs |
-| `generate-pdf.mjs` | Playwright: HTML to PDF |
-| `generate-latex.mjs` | LaTeX CV validator + pdflatex compiler |
-| `article-digest.md` | Compact proof points from portfolio (optional) |
-| `interview-prep/story-bank.md` | Accumulated STAR+R stories across evaluations |
-| `interview-prep/{company}-{role}.md` | Company-specific interview intel reports |
-| `analyze-patterns.mjs` | Pattern analysis script (JSON output) |
-| `followup-cadence.mjs` | Follow-up cadence calculator (JSON output) |
-| `data/follow-ups.md` | Follow-up history tracker |
-| `scan.mjs` | Zero-token portal scanner — hits Greenhouse/Ashby/Lever APIs directly, zero LLM cost |
-| `check-liveness.mjs` | Job posting liveness checker |
-| `liveness-core.mjs` | Shared liveness logic (expired signals win over generic Apply text) |
-| `reports/` | Evaluation reports (format: `{###}-{company-slug}-{YYYY-MM-DD}.md`). Blocks A-F + G (Posting Legitimacy), plus `## Machine Summary` YAML for downstream scripts. Header includes `**Legitimacy:** {tier}`. |
+LEADERSHIP_TERMS = ["senior manager", "sr manager", "manager"]
+DOMAIN_TERMS = ["it", "infrastructure", "technology operations", "workplace technology"]
+```
 
-### OpenCode Commands
+**Scoring:**
 
-When using [OpenCode](https://opencode.ai), the following slash commands are available (defined in `.opencode/commands/`):
+```python
+SCORING = {
+    "remote_bonus": 3,
+    "vegas_bonus": 5,
+    "top_company_bonus": 3,
+}
 
-| Command | Claude Code Equivalent | Description |
-|---------|------------------------|-------------|
-| `/career-ops` | `/career-ops` | Show menu or evaluate JD with args |
-| `/career-ops-pipeline` | `/career-ops pipeline` | Process pending URLs from inbox |
-| `/career-ops-evaluate` | `/career-ops oferta` | Evaluate job offer (A-F scoring) |
-| `/career-ops-compare` | `/career-ops ofertas` | Compare and rank multiple offers |
-| `/career-ops-contact` | `/career-ops contacto` | LinkedIn outreach (find contacts + draft) |
-| `/career-ops-deep` | `/career-ops deep` | Deep company research |
-| `/career-ops-pdf` | `/career-ops pdf` | Generate ATS-optimized CV |
-| `/career-ops-latex` | `/career-ops latex` | Export CV as LaTeX/Overleaf .tex |
-| `/career-ops-training` | `/career-ops training` | Evaluate course/cert against goals |
-| `/career-ops-project` | `/career-ops project` | Evaluate portfolio project idea |
-| `/career-ops-tracker` | `/career-ops tracker` | Application status overview |
-| `/career-ops-apply` | `/career-ops apply` | Live application assistant |
-| `/career-ops interview` | `/career-ops interview` | Interactive profile/CV onboarding interview |
-| `/career-ops-scan` | `/career-ops scan` | Scan portals for new offers |
-| `/career-ops-batch` | `/career-ops batch` | Batch processing with parallel workers |
-| `/career-ops-patterns` | `/career-ops patterns` | Analyze rejection patterns and improve targeting |
-| `/career-ops-followup` | `/career-ops followup` | Follow-up cadence tracker |
+TITLE_SCORES = {
+    "senior it manager": 9,
+    "sr it manager": 9,
+    "it manager": 8,
+    "it operations manager": 8,
+    "infrastructure manager": 8,
+}
+```
 
-**Note:** OpenCode commands invoke the same `.claude/skills/career-ops/SKILL.md` skill used by Claude Code. The `modes/*` files are shared between both platforms.
+**ATS Companies:**
 
-### Gemini CLI Commands
+```python
+ATS_COMPANIES = [
+    ("Anthropic", "greenhouse", "anthropic"),
+    ("OpenAI", "greenhouse", "openai"),
+    ("Stripe", "greenhouse", "stripe"),
+    # ... 28 more
+]
+```
 
-When using the [Gemini CLI](https://github.com/google-gemini/gemini-cli), the following slash commands are available (defined in `.gemini/commands/`):
+### `sources/utils.py`
 
-| Command | Claude Code Equivalent | Description |
-|---------|------------------------|-------------|
-| `/career-ops` | `/career-ops` | Show menu or evaluate JD with args |
-| `/career-ops-pipeline` | `/career-ops pipeline` | Process pending URLs from inbox |
-| `/career-ops-evaluate` | `/career-ops oferta` | Evaluate job offer (A-G scoring) |
-| `/career-ops-compare` | `/career-ops ofertas` | Compare and rank multiple offers |
-| `/career-ops-contact` | `/career-ops contacto` | LinkedIn outreach (find contacts + draft) |
-| `/career-ops-deep` | `/career-ops deep` | Deep company research |
-| `/career-ops-pdf` | `/career-ops pdf` | Generate ATS-optimized CV |
-| `/career-ops-latex` | `/career-ops latex` | Export CV as LaTeX/Overleaf .tex |
-| `/career-ops-training` | `/career-ops training` | Evaluate course/cert against goals |
-| `/career-ops-project` | `/career-ops project` | Evaluate portfolio project idea |
-| `/career-ops-tracker` | `/career-ops tracker` | Application status overview |
-| `/career-ops-apply` | `/career-ops apply` | Live application assistant |
-| `/career-ops interview` | `/career-ops interview` | Interactive profile/CV onboarding interview |
-| `/career-ops-scan` | `/career-ops scan` | Scan portals for new offers |
-| `/career-ops-batch` | `/career-ops batch` | Batch processing with parallel workers |
-| `/career-ops-patterns` | `/career-ops patterns` | Analyze rejection patterns and improve targeting |
-| `/career-ops-followup` | `/career-ops followup` | Follow-up cadence tracker |
+**Core filter:**
 
-**Note:** Gemini CLI commands are defined in `.gemini/commands/*.toml`. The project context is auto-loaded from `GEMINI.md`. All `modes/*` files are shared across Claude Code, OpenCode, and Gemini CLI.
+```python
+def ok_title(title):
+    """Two-part title match: exact phrases OR leadership+domain combo."""
+    title_lower = title.lower()
+    
+    # Exact phrase match
+    if any(phrase in title_lower for phrase in EXACT_PHRASES):
+        return True
+    
+    # Reject negatives first
+    if any(neg in title_lower for neg in TITLE_NEGATIVES):
+        return False
+    
+    # Leadership + domain combo
+    has_leadership = any(term in title_lower for term in LEADERSHIP_TERMS)
+    has_domain = any(term in title_lower for term in DOMAIN_TERMS)
+    
+    return has_leadership and has_domain
 
-### First Run — Onboarding (IMPORTANT)
+def score_title(title, company, location):
+    """Assign score based on title, company, location."""
+    # Base score from title
+    score = TITLE_SCORES.get(title.lower(), 0)
+    
+    # Bonuses
+    if "remote" in location.lower():
+        score += SCORING["remote_bonus"]
+    if "vegas" in location.lower() or "las vegas" in location.lower():
+        score += SCORING["vegas_bonus"]
+    if any(tc in company.lower() for tc in TOP_COMPANIES):
+        score += SCORING["top_company_bonus"]
+    
+    return score
+```
 
-**Before doing ANYTHING else, check if the system is set up.** On the first message of each session, run the cold-start check — one deterministic source of truth (this doc and `doctor.mjs` share the same prerequisite list, so they can never drift):
+### `sources/ats.py`
+
+Queries Greenhouse, Ashby, Lever, Workday APIs for career pages:
+
+```python
+def scan_ats_companies(companies):
+    """Scan ATS APIs, return (jobs, errors)."""
+    jobs = []
+    errors = []
+    
+    for company_name, ats_type, slug in companies:
+        try:
+            if ats_type == "greenhouse":
+                results = query_greenhouse(slug)
+            elif ats_type == "ashby":
+                results = query_ashby(slug)
+            # ... etc
+            
+            # Filter & rank
+            for job in results:
+                if ok_title(job["title"]) and ok_location(job["location"]):
+                    job["score"] = score_title(job["title"], company_name, job["location"])
+                    jobs.append(job)
+        except Exception as e:
+            errors.append(f"{company_name}: {e}")
+    
+    return jobs, errors
+```
+
+### `pipeline.py`
+
+**Dedupe:**
+
+```python
+def deduplicate(jobs):
+    """Remove duplicate company+title combos."""
+    seen = {}
+    unique = []
+    for job in jobs:
+        key = (clean(job["company"]), clean(job["title"]))
+        if key not in seen:
+            seen[key] = True
+            unique.append(job)
+    return unique
+```
+
+**Rank:**
+
+```python
+def rank_jobs(jobs):
+    """Assign labels, sort by score."""
+    for job in jobs:
+        score = job.get("score", 0)
+        if score >= 15:
+            job["label"] = "HIGH"
+        elif score >= 8:
+            job["label"] = "MEDIUM"
+        else:
+            job["label"] = "LOW"
+    
+    return sorted(jobs, key=lambda j: j.get("score", 0), reverse=True)
+```
+
+**Seen tracking:**
+
+```python
+def update_seen(jobs):
+    """Add jobs to seen.json to avoid rescanning."""
+    seen = load_json(SEEN_FILE, [])
+    for job in jobs:
+        key = hashlib.sha256(
+            f"{job['company']}:{job['title']}".encode()
+        ).hexdigest()
+        if key not in seen:
+            seen.append(key)
+    save_json(SEEN_FILE, seen)
+```
+
+### `mail.py`
+
+**Email formatting:**
+
+```python
+def format_report(jobs, errors=None, total_scanned=0, source_counts=None):
+    """Generate formatted text report."""
+    report = f"""Career Sweep Morning - {datetime.now().strftime('%Y-%m-%d')}
+Run at {datetime.now().strftime('%I:%M %p %Z')}
+
+Total: {len(jobs)} | HIGH: {len([j for j in jobs if j['label']=='HIGH'])} | MEDIUM: ... | LOW: ...
+Las Vegas: {len([j for j in jobs if j['location_type']=='vegas'])} | Remote US: {len([j for j in jobs if j['location_type']=='remote_us'])}
+
+...
+"""
+    return report
+
+def send_email(subject, body):
+    """Send via iCloud SMTP."""
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_FROM
+        msg["To"] = EMAIL_TO
+        
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Email failed: {e}")
+        return False
+```
+
+---
+
+## Cron Job
+
+**Schedule:** `0 6,13 * * *` (6am/1pm PT daily)
+
+**Command:**
 
 ```bash
-node doctor.mjs --json
+cd /home/fihadmin/career-sweep && python3 sweep.py scan --json > /tmp/ats.json && \
+hermes agent prompt "
+Run web_extract on 45+ job boards (see PROMPT in cron job definition).
+Parse and save board results to /home/fihadmin/career-sweep/data/board-results-YYYY-MM-DD.json.
+Merge with ATS results and send email.
+"
 ```
 
-Output: `{"onboardingNeeded": <bool>, "missing": [...], "warnings": [...]}`, where `missing` lists whichever of `cv.md`, `config/profile.yml`, `modes/_profile.md`, `portals.yml` are absent. `warnings` is reserved for non-blocking setup signals.
+**Agent prompt includes:**
 
-If `modes/_profile.md` is missing, copy from `modes/_profile.template.md` silently. This is the user's customization file — it will never be overwritten by updates.
-
-**If, after that, `onboardingNeeded` is still true (any of `cv.md` / `config/profile.yml` / `portals.yml` is missing), enter onboarding mode.** Do NOT proceed with evaluations, scans, or any other mode until the basics are in place. Guide the user step by step:
-
-#### Step 1: CV (required)
-If `cv.md` is missing, ask:
-> "I don't have your CV yet. You can either:
-> 1. Paste your CV here and I'll convert it to markdown
-> 2. Paste your LinkedIn URL and I'll extract the key info
-> 3. Tell me about your experience and I'll draft a CV for you
->
-> Which do you prefer?"
-
-Create `cv.md` from whatever they provide. Make it clean markdown with standard sections (Summary, Experience, Projects, Education, Skills).
-
-#### Step 2: Profile (required)
-If `config/profile.yml` is missing, copy from `config/profile.example.yml` and then ask:
-> "I need a few details to personalize the system:
-> - Your full name and email
-> - Your location and timezone
-> - What roles are you targeting? (e.g., 'Senior Backend Engineer', 'AI Product Manager')
-> - Your salary target range
->
-> I'll set everything up for you."
-
-Fill in `config/profile.yml` with their answers. For archetypes and targeting narrative, store the user-specific mapping in `modes/_profile.md` or `config/profile.yml` rather than editing `modes/_shared.md`.
-
-#### Step 3: Portals (recommended)
-If `portals.yml` is missing:
-> "I'll set up the job scanner with 45+ pre-configured companies. Want me to customize the search keywords for your target roles?"
-
-Copy `templates/portals.example.yml` → `portals.yml`. If they gave target roles in Step 2, update `title_filter.positive` to match.
-
-#### Step 4: Tracker
-If `data/applications.md` doesn't exist, create it:
-```markdown
-# Applications Tracker
-
-| # | Date | Company | Role | Score | Status | PDF | Report | Notes |
-|---|------|---------|------|-------|--------|-----|--------|-------|
-```
-
-#### Step 5: Get to know the user (important for quality)
-
-After the basics are set up, proactively ask for more context. The more you know, the better your evaluations will be:
-
-> "The basics are ready. But the system works much better when it knows you well. Can you tell me more about:
-> - What makes you unique? What's your 'superpower' that other candidates don't have?
-> - What kind of work excites you? What drains you?
-> - Any deal-breakers? (e.g., no on-site, no startups under 20 people, no Java shops)
-> - Your best professional achievement — the one you'd lead with in an interview
-> - Any projects, articles, or case studies you've published?
->
-> The more context you give me, the better I filter. Think of it as onboarding a recruiter — the first week I need to learn about you, then I become invaluable."
-
-Store any insights the user shares in `config/profile.yml` (under narrative), `modes/_profile.md`, or in `article-digest.md` if they share proof points. Do not put user-specific archetypes or framing into `modes/_shared.md`.
-
-**After every evaluation, learn.** If the user says "this score is too high, I wouldn't apply here" or "you missed that I have experience in X", update your understanding in `modes/_profile.md`, `config/profile.yml`, or `article-digest.md`. The system should get smarter with every interaction without putting personalization into system-layer files.
-
-#### Step 6: Ready
-Once all files exist, confirm:
-> "You're all set! You can now:
-> - Paste a job URL to evaluate it
-> - Run `/career-ops scan` (or `/career-ops-scan` if using OpenCode) to search portals
-> - Run `/career-ops` to see all commands
->
-> Everything is customizable — just ask me to change anything.
->
-> Tip: Having a personal portfolio dramatically improves your job search. If you don't have one yet, the author's portfolio is also open source: github.com/santifer/cv-santiago — feel free to fork it and make it yours."
-
-Then suggest automation:
-> "Want me to scan for new offers automatically? I can set up a recurring scan every few days so you don't miss anything. Just say 'scan every 3 days' and I'll configure it."
-
-If the user accepts, use the `/loop` or `/schedule` skill (if available) to set up a recurring `/career-ops scan` (or `/career-ops-scan` if using OpenCode). If those aren't available, suggest adding a cron job or remind them to run `/career-ops scan` (or `/career-ops-scan` if using OpenCode) periodically.
-
-### Personalization
-
-This system is designed to be customized by YOU (AI Agent). When the user asks you to change archetypes, translate modes, adjust scoring, add companies, or modify negotiation scripts -- do it directly. You read the same files you use, so you know exactly what to edit.
-
-**Common customization requests:**
-- "Change the archetypes to [backend/frontend/data/devops] roles" → edit `modes/_profile.md` or `config/profile.yml`
-- "Translate the modes to English" → edit all files in `modes/`
-- "Add these companies to my portals" → edit `portals.yml`
-- "Update my profile" → edit `config/profile.yml`
-- "Change the CV template design" → edit `templates/cv-template.html`
-- "Adjust the scoring weights" → edit `modes/_profile.md` for user-specific weighting, or edit `modes/_shared.md` and `batch/batch-prompt.md` only when changing the shared system defaults for everyone
-
-### Language Modes
-
-Default modes are in `modes/` (English). Additional language-specific modes are available:
-
-- **German (DACH market):** `modes/de/` — native German translations with DACH-specific vocabulary (13. Monatsgehalt, Probezeit, Kündigungsfrist, AGG, Tarifvertrag, etc.). Includes `_shared.md`, `angebot.md` (evaluation), `bewerben.md` (apply), `pipeline.md`.
-- **French (Francophone market):** `modes/fr/` — native French translations with France/Belgium/Switzerland/Luxembourg-specific vocabulary (CDI/CDD, convention collective SYNTEC, RTT, mutuelle, prévoyance, 13e mois, intéressement/participation, titres-restaurant, CSE, portage salarial, etc.). Includes `_shared.md`, `offre.md` (evaluation), `postuler.md` (apply), `pipeline.md`.
-- **Japanese (Japan market):** `modes/ja/` — native Japanese translations with Japan-specific vocabulary (正社員, 業務委託, 賞与, 退職金, みなし残業, 年俸制, 36協定, 通勤手当, 住宅手当, etc.). Includes `_shared.md`, `kyujin.md` (evaluation), `oubo.md` (apply), `pipeline.md`.
-
-**When to use German modes:** If the user is targeting German-language job postings, lives in DACH, or asks for German output. Either:
-1. User says "use German modes" → read from `modes/de/` instead of `modes/`
-2. User sets `language.modes_dir: modes/de` in `config/profile.yml` → always use German modes
-3. You detect a German JD → suggest switching to German modes
-
-**When to use French modes:** If the user is targeting French-language job postings, lives in France/Belgium/Switzerland/Luxembourg/Quebec, or asks for French output. Either:
-1. User says "use French modes" → read from `modes/fr/` instead of `modes/`
-2. User sets `language.modes_dir: modes/fr` in `config/profile.yml` → always use French modes
-3. You detect a French JD → suggest switching to French modes
-
-**When to use Japanese modes:** If the user is targeting Japanese-language job postings, lives in Japan, or asks for Japanese output. Either:
-1. User says "use Japanese modes" → read from `modes/ja/` instead of `modes/`
-2. User sets `language.modes_dir: modes/ja` in `config/profile.yml` → always use Japanese modes
-3. You detect a Japanese JD → suggest switching to Japanese modes
-
-**When NOT to:** If the user applies to English-language roles, even at French, German, or Japanese companies, use the default English modes.
-
-### Skill Modes
-
-| If the user... | Mode |
-|----------------|------|
-| Pastes JD or URL | auto-pipeline (evaluate + report + PDF + tracker) |
-| Asks to evaluate offer | `oferta` |
-| Asks to compare offers | `ofertas` |
-| Wants LinkedIn outreach | `contacto` |
-| Asks for company research | `deep` |
-| Preps for interview at specific company | `interview-prep` |
-| Wants interactive profile/CV onboarding | `interview` |
-| Wants to generate CV/PDF | `pdf` |
-| Evaluates a course/cert | `training` |
-| Evaluates portfolio project | `project` |
-| Asks about application status | `tracker` |
-| Fills out application form | `apply` |
-| Searches for new offers | `scan` |
-| Processes pending URLs | `pipeline` |
-| Batch processes offers | `batch` |
-| Asks about rejection patterns or wants to improve targeting | `patterns` |
-| Asks about follow-ups or application cadence | `followup` |
-
-### CV Source of Truth
-
-- `cv.md` in project root is the canonical CV
-- `article-digest.md` has detailed proof points (optional)
-- **NEVER hardcode metrics** -- read them from these files at evaluation time
+- 9 batches of board URLs (Dice, Builtin, remote specialists, Vegas local, government, startup, etc.)
+- Title parsing: "IT Manager" and "Sr IT Manager" only
+- Location parsing: Remote US, Las Vegas, US cities only
+- Output format: JSON with company, title, location, URL, source
+- Merge and email via Python script
 
 ---
 
-## Ethical Use -- CRITICAL
+## Customization
 
-**This system is designed for quality, not quantity.** The goal is to help the user find and apply to roles where there is a genuine match -- not to spam companies with mass applications.
+### Change Target Roles
 
-- **NEVER submit an application without the user reviewing it first.** Fill forms, draft answers, generate PDFs -- but always STOP before clicking Submit/Send/Apply. The user makes the final call.
-- **Strongly discourage low-fit applications.** If a score is below 4.0/5, explicitly recommend against applying. The user's time and the recruiter's time are both valuable. Only proceed if the user has a specific reason to override the score.
-- **Quality over speed.** A well-targeted application to 5 companies beats a generic blast to 50. Guide the user toward fewer, better applications.
-- **Respect recruiters' time.** Every application a human reads costs someone's attention. Only send what's worth reading.
+Edit `config.py`:
+
+```python
+EXACT_PHRASES = [
+    "infrastructure engineer",
+    "sr infrastructure engineer",
+    "devops manager",
+]
+
+TITLE_SCORES = {
+    "infrastructure engineer": 8,
+    "sr infrastructure engineer": 9,
+    "devops manager": 8,
+}
+```
+
+### Change Scoring
+
+```python
+SCORING = {
+    "remote_bonus": 5,  # ↑ prioritize remote
+    "vegas_bonus": 2,   # ↓ less picky on Vegas
+    "top_company_bonus": 1,  # ↓ less weight on company
+}
+```
+
+### Add/Remove ATS Companies
+
+```python
+ATS_COMPANIES = [
+    ("NewCompany", "greenhouse", "newcompany-slug"),
+    # ...
+]
+```
+
+### Change Email
+
+```python
+EMAIL_TO = "your-email@example.com"
+SMTP_USER = "your-icloud@icloud.com"
+SMTP_PASS = "your-app-password"
+```
 
 ---
 
-## Offer Verification -- MANDATORY
+## Testing
 
-**NEVER trust WebSearch/WebFetch to verify if an offer is still active.** ALWAYS use Playwright:
-1. `browser_navigate` to the URL
-2. `browser_snapshot` to read content
-3. Only footer/navbar without JD = closed. Title + description + Apply = active.
+### ATS Scan Only (Fast)
 
-**Exception for batch workers (`claude -p`):** Playwright is not available in headless pipe mode. Use WebFetch as fallback and mark the report header with `**Verification:** unconfirmed (batch mode)`. The user can verify manually later.
+```bash
+cd /home/fihadmin/career-sweep
+python3 sweep.py scan --json
+```
+
+Expected: 1-6 jobs from 31 companies in ~11 seconds.
+
+### Full E2E (requires agent web_extract)
+
+Local testing not recommended (agent needed). Use cron job runs or manual agent dispatch.
+
+### Title Filter
+
+```python
+python3 -c "
+from sources.utils import ok_title
+tests = [
+    ('IT Manager', True),
+    ('Sr IT Manager', True),
+    ('Director of IT', False),
+    ('VP of Infrastructure', False),
+]
+for title, expected in tests:
+    result = ok_title(title)
+    print(f'{title}: {result} [{\"✓\" if result == expected else \"✗\"}]')
+"
+```
 
 ---
 
-## CI/CD and Quality
+## Troubleshooting
 
-- **GitHub Actions** run on every PR: `test-all.mjs` (63+ checks), auto-labeler (risk-based: 🔴 core-architecture, ⚠️ agent-behavior, 📄 docs), welcome bot for first-time contributors
-- **Branch protection** on `main`: status checks must pass before merge. No direct pushes to main (except admin bypass).
-- **Dependabot** monitors npm, Go modules, and GitHub Actions for security updates
-- **Contributing process**: issue first → discussion → PR with linked issue → CI passes → maintainer review → merge
+### ATS scan returns 0 jobs
 
-## Community and Governance
+Check:
+1. Company slugs in `config.py` are correct
+2. APIs are responding (test via curl)
+3. Title filter is too strict (run test above)
 
-- **Code of Conduct**: Contributor Covenant 2.1 with enforcement actions (see `CODE_OF_CONDUCT.md`)
-- **Governance**: BDFL model with contributor ladder — Participant → Contributor → Triager → Reviewer → Maintainer (see `GOVERNANCE.md`)
-- **Security**: private vulnerability reporting via email (see `SECURITY.md`)
-- **Support**: help questions go to Discord/Discussions, not issues (see `SUPPORT.md`)
-- **Discord**: https://discord.gg/8pRpHETxa4
+### Email not sending
 
-## Stack and Conventions
+Check:
+1. iCloud SMTP credentials in `config.py`
+2. SMTP_PASS is app-specific password (not iCloud password)
+3. `mail.py`: `send_email()` error logs
 
-- Node.js (mjs modules), Playwright (PDF + scraping), YAML (config), HTML/CSS (template), Markdown (data), Canva MCP (optional visual CV)
-- Scripts in `.mjs`, configuration in YAML
-- Output in `output/` (gitignored), Reports in `reports/`
-- JDs in `jds/` (referenced as `local:jds/{file}` in pipeline.md)
-- Batch in `batch/` (gitignored except scripts and prompt)
-- Report numbering: sequential 3-digit zero-padded, max existing + 1
-- **RULE: After each batch of evaluations, run `node merge-tracker.mjs`** to merge tracker additions and avoid duplications.
-- **RULE: NEVER create new entries in applications.md if company+role already exists.** Update the existing entry.
+### Board scraping missing jobs
 
-### TSV Format for Tracker Additions
+Check:
+1. web_extract is reaching the URLs
+2. Job titles in results match the role filter (test with `ok_title()`)
+3. Location filter is not removing valid US locations
 
-Write one TSV file per evaluation to `batch/tracker-additions/{num}-{company-slug}.tsv`. Single line, 9 tab-separated columns:
+---
 
-```
-{num}\t{date}\t{company}\t{role}\t{status}\t{score}/5\t{pdf_emoji}\t[{num}](reports/{num}-{slug}-{date}.md)\t{note}
-```
+## Data Contract
 
-**Column order (IMPORTANT -- status BEFORE score):**
-1. `num` -- sequential number (integer)
-2. `date` -- YYYY-MM-DD
-3. `company` -- short company name
-4. `role` -- job title
-5. `status` -- canonical status (e.g., `Evaluated`)
-6. `score` -- format `X.X/5` (e.g., `4.2/5`)
-7. `pdf` -- `✅` or `❌`
-8. `report` -- markdown link, always written **root-relative**: `[num](reports/...)`
-9. `notes` -- one-line summary
+**User-customizable (edit these):**
+- `config.py` — roles, scoring, SMTP, ATS companies
+- `data/seen.json` — can be reset with `rm -f data/seen.json`
 
-**Note:** In applications.md, score comes BEFORE status. The merge script handles this column swap automatically.
+**System files (don't modify):**
+- `sweep.py`, `pipeline.py`, `mail.py`, `sources/*` — updated from repo
+- `.gitignore`, `README.md`, `CLAUDE.md` — documentation
 
-**Report link normalization:** The TSV always carries a **root-relative** `[num](reports/...)` link. `merge-tracker.mjs` rewrites it so the link is relative to the tracker file's own directory before writing it into the tracker — `../reports/...` when the tracker is at `data/applications.md`, or `reports/...` at the root layout. This keeps links clickable from the tracker (markdown links resolve relative to the file that contains them). Normalization is idempotent. To fix links in an existing tracker, run `node merge-tracker.mjs --migrate` (see #760).
+---
 
-### Pipeline Integrity
+## Upstream Credit
 
-1. **NEVER edit applications.md to ADD new entries** -- Write TSV in `batch/tracker-additions/` and `merge-tracker.mjs` handles the merge.
-2. **YES you can edit applications.md to UPDATE status/notes of existing entries.**
-3. All reports MUST include `**URL:**` in the header (between Score and PDF). Include `**Legitimacy:** {tier}` (see Block G in `modes/oferta.md`).
-4. All statuses MUST be canonical (see `templates/states.yml`).
-5. Health check: `node verify-pipeline.mjs`
-6. Normalize statuses: `node normalize-statuses.mjs`
-7. Dedup: `node dedup-tracker.mjs`
+Extends [`career-ops`](https://github.com/santifer/career-ops) by santifer.
 
-### Canonical States (applications.md)
-
-**Source of truth:** `templates/states.yml`
-
-| State | When to use |
-|-------|-------------|
-| `Evaluated` | Report completed, pending decision |
-| `Applied` | Application sent |
-| `Responded` | Company responded |
-| `Interview` | In interview process |
-| `Offer` | Offer received |
-| `Rejected` | Rejected by company |
-| `Discarded` | Discarded by candidate or offer closed |
-| `SKIP` | Doesn't fit, don't apply |
-
-**RULES:**
-- No markdown bold (`**`) in status field
-- No dates in status field (use the date column)
-- No extra text (use the notes column)
-@AGENTS.md
-<!-- Add anything Claude Code specific that other agents don't need -->
+See [`ACKNOWLEDGMENTS.md`](./ACKNOWLEDGMENTS.md).
