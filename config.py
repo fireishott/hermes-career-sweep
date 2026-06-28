@@ -1,6 +1,19 @@
 """Career sweep configuration - customizable per user."""
 
 import os
+from pathlib import Path
+
+# Auto-load a gitignored .env next to this file so SMTP/email credentials are
+# present no matter how sweep.py is invoked (cron or interactive agent run).
+# Real environment variables still take precedence (setdefault).
+_envfile = Path(__file__).with_name(".env")
+if _envfile.exists():
+    for _line in _envfile.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _v = _line.split("=", 1)
+        os.environ.setdefault(_k.strip(), _v.strip().strip("\"").strip("'"))
 
 # SMTP - use environment variables, NOT hardcoded credentials
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.mail.me.com")
@@ -77,7 +90,16 @@ US_CITIES = [
     "houston", "richmond", "nashville", "portland", "philadelphia", "detroit",
     "minneapolis", "las vegas", "reno", "henderson", "north las vegas",
     "sparks", "salt lake", "raleigh", "charlotte", "pittsburgh",
-    "san diego", "tampa", "orlando",
+    "san diego", "tampa", "orlando", "milwaukee", "addison", "englewood",
+    "louisville", "rosemont", "highland hills", "lonetree", "lone tree",
+    "saint louis", "st. louis", "st louis", "columbus", "cincinnati",
+    "indianapolis", "kansas city", "omaha", "memphis", "baltimore",
+    "jacksonville", "cleveland", "san jose", "sacramento", "long beach",
+    "oakland", "fort worth", "el paso", "nashville", "oklahoma city",
+    "las vegas", "memphis", "louisville", "baltimore", "milwaukee",
+    "albuquerque", "tucson", "fresno", "mesa", "sacramento", "atlanta",
+    "omaha", "colorado springs", "raleigh", "long beach", "virginia beach",
+    "miami", "oakland", "minneapolis", "tulsa", "tampa", "arlington",
 ]
 
 US_SIGNALS = [
