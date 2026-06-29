@@ -1,10 +1,20 @@
 """Email formatting and delivery."""
 
+import os
 import smtplib
 import ssl
+import subprocess
 from datetime import datetime
 from email.message import EmailMessage
 from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO
+
+# Himalaya CLI is Hermes' configured email tool (sends from the same iCloud
+# account as the SMTP fallback, but also files a copy in Sent). Paths are
+# overridable via env so this isn't pinned to one host layout.
+HIMALAYA_BIN = os.getenv(
+    "HIMALAYA_BIN", "/home/fihadmin/.hermes/profiles/ignyte/home/.local/bin/himalaya"
+)
+HIMALAYA_CONFIG = os.getenv("HIMALAYA_CONFIG", "/home/fihadmin/.config/himalaya/config.toml")
 
 
 def format_report(jobs, errors=None, ats_count=0, total_scanned=0, source_counts=None):
@@ -82,7 +92,38 @@ def format_report(jobs, errors=None, ats_count=0, total_scanned=0, source_counts
 
 
 def send_email(subject, body):
-    """Send email via iCloud SMTP."""
+    """Send the results email via himalaya (preferred); fall back to SMTP."""
+    if _send_via_himalaya(subject, body):
+        return True
+    return _send_via_smtp(subject, body)
+
+
+def _send_via_himalaya(subject, body):
+    """Send through the himalaya CLI. Returns True on success, False to fall back."""
+    if not os.path.exists(HIMALAYA_BIN):
+        return False
+    raw = (
+        f"From: {EMAIL_FROM}\r\n"
+        f"To: {EMAIL_TO}\r\n"
+        f"Subject: {subject}\r\n"
+        f"\r\n"
+        f"{body}"
+    )
+    try:
+        r = subprocess.run(
+            [HIMALAYA_BIN, "-c", HIMALAYA_CONFIG, "message", "send"],
+            input=raw, text=True, capture_output=True, timeout=60,
+        )
+        if r.returncode == 0:
+            return True
+        print(f"himalaya send failed (rc={r.returncode}): {r.stderr.strip()[:200]} — falling back to SMTP")
+    except Exception as e:
+        print(f"himalaya send error: {e} — falling back to SMTP")
+    return False
+
+
+def _send_via_smtp(subject, body):
+    """iCloud SMTP fallback."""
     msg = EmailMessage()
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
